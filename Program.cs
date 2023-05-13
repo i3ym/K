@@ -2,7 +2,7 @@
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 
-var minecraftRegex = new Regex(@"Minecraft\*? 1\.\d\d\.?\d?\d?.*", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.CultureInvariant);
+var minecraftRegex = MinecraftRegex();
 var display = XOpenDisplay(null);
 
 
@@ -153,4 +153,10 @@ readonly struct XTextProperty
         Format = format;
         NItems = nitems;
     }
+}
+
+partial class Program
+{
+    [GeneratedRegex("Minecraft\\*? 1\\.\\d\\d\\.?\\d?\\d?.*", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.CultureInvariant)]
+    private static partial Regex MinecraftRegex();
 }
