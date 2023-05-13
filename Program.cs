@@ -1,9 +1,28 @@
-﻿using System.Runtime.CompilerServices;
+﻿using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 
 var minecraftRegex = MinecraftRegex();
 var display = XOpenDisplay(null);
+
+var mousefile = args.Length < 1 ? "/dev/input/by-id/usb-SINOWEALTH_Wired_Gaming_Mouse-event-mouse" : args[0];
+var mousename = args.Length < 2 ? "Glorious Model O" : args[1];
+
+{
+    var info = new ProcessStartInfo("/bin/sh");
+    info.ArgumentList.Add("-c");
+    info.ArgumentList.Add($$"""
+        ids=$(xinput --list | awk -v search='{{mousename}}' '$0 ~ search {match($0, /id=[0-9]+/); if (RSTART) print substr($0, RSTART+3, RLENGTH-3) }')
+        for i in $ids
+        do
+            xinput set-button-map $i 1 2 3 4 5 6 7 10 11 8 9 12 13 14 15 16
+        done
+        """.Replace("\r", "")
+    );
+
+    Process.Start(info)!.WaitForExit();
+}
 
 
 var leftDelay = 100;
@@ -47,7 +66,6 @@ rightThread.Start();
 const ulong clickDelay = 10;
 
 
-var mousefile = args.Length == 0 ? "/dev/input/by-id/usb-SINOWEALTH_Wired_Gaming_Mouse-event-mouse" : args[0];
 var stream = File.OpenRead(mousefile);
 
 Span<byte> buffer = stackalloc byte[16 + 8];
