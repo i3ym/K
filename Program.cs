@@ -175,6 +175,6 @@ readonly struct XTextProperty
 
 partial class Program
 {
-    [GeneratedRegex("Minecraft\\*? 1\\.\\d\\d\\.?\\d?\\d?.*", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.CultureInvariant)]
+    [GeneratedRegex("Minecraft\\*? 1\\.\\d\\d?\\.?\\d?\\d?.*", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.CultureInvariant)]
     private static partial Regex MinecraftRegex();
 }
