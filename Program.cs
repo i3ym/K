@@ -1,13 +1,15 @@
 ﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
-var minecraftRegex = MinecraftRegex();
-var display = XOpenDisplay(null);
+var config = JsonSerializer.Deserialize<Config>(File.ReadAllText("k.cfg"))!;
+var mousefile = config.MouseFile;
+var mousename = config.MouseName;
+var minecraftRegex = new Regex($"({string.Join('|', config.Regexes)})", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Singleline);
 
-var mousefile = args.Length < 1 ? "/dev/input/by-id/usb-SINOWEALTH_Wired_Gaming_Mouse-event-mouse" : args[0];
-var mousename = args.Length < 2 ? "Glorious Model O" : args[1];
+var display = XOpenDisplay(null);
 
 {
     var info = new ProcessStartInfo("/bin/sh");
@@ -44,7 +46,7 @@ var leftThread = new Thread(() =>
 leftThread.IsBackground = true;
 leftThread.Start();
 
-var rightDelay = 100;
+var rightDelay = 10;
 bool rightClicking = false;
 var righthandle = new EventWaitHandle(false, EventResetMode.AutoReset);
 var rightThread = new Thread(() =>
@@ -173,8 +175,9 @@ readonly struct XTextProperty
     }
 }
 
-partial class Program
+sealed class Config
 {
-    [GeneratedRegex("Minecraft\\*? 1\\.\\d\\d?\\.?\\d?\\d?.*", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.CultureInvariant)]
-    private static partial Regex MinecraftRegex();
+    public required string MouseFile { get; init; }
+    public required string MouseName { get; init; }
+    public required IReadOnlyCollection<string> Regexes { get; init; }
 }
