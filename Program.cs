@@ -1,15 +1,39 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Frozen;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
-var config = JsonSerializer.Deserialize<Config>(File.ReadAllText("k.cfg"))!;
+var config = JsonSerializer.Deserialize<Config>(File.ReadAllText("k.cfg"), new JsonSerializerOptions() { Converters = { new JsonStringEnumConverter() } })!;
 var mousefile = config.MouseFile;
 var mousename = config.MouseName;
-var minecraftRegex = new Regex($"({string.Join('|', config.Regexes)})", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Singleline);
 
-var display = XOpenDisplay(null);
+var defaultConfig = new AppliedConfiguration()
+{
+    Modes = config.Default.Modes.ToFrozenDictionary(),
+
+    LeftDelay = config.Default.LeftDelay,
+    RightDelay = config.Default.RightDelay,
+};
+var modes = config.Regexes
+    .Select(r =>
+    {
+        var regex = new Regex(r.Key, RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Singleline);
+        var cfgf = new AppliedConfiguration()
+        {
+            Modes = defaultConfig.Modes
+                .Concat(r.Value.Modes ?? [])
+                .ToFrozenDictionary(),
+
+            LeftDelay = r.Value.LeftDelay ?? defaultConfig.LeftDelay,
+            RightDelay = r.Value.RightDelay ?? defaultConfig.RightDelay,
+        };
+
+        return new ASD() { Regex = regex, Config = cfgf };
+    })
+    .ToArray();
 
 {
     var info = new ProcessStartInfo("/bin/sh");
@@ -23,141 +47,185 @@ var display = XOpenDisplay(null);
         """.Replace("\r", "")
     );
 
-    Process.Start(info)!.WaitForExit();
+    using var process = Process.Start(info)!;
+    process.WaitForExit();
 }
 
+var state = new ProgramState(XOpenDisplay(null));
 
-var leftDelay = 100;
-bool leftClicking = false;
-var lefthandle = new EventWaitHandle(false, EventResetMode.AutoReset);
-var leftThread = new Thread(() =>
+new Thread(async () =>
+{
+    using var process = Process.Start(new ProcessStartInfo("i3-msg")
+    {
+        ArgumentList = { "-t", "subscribe", "[ \"window\" ]", "-rm" },
+        RedirectStandardOutput = true,
+    })!;
+
+    process.OutputDataReceived += (obj, evt) =>
+    {
+        if (evt.Data is null) return;
+
+        var data = JsonSerializer.Deserialize<I3MsgData>(evt.Data);
+        state.CurrentWindowTitle = data.container.window_properties.title ?? "";
+        state.Left.Clicking = state.Right.Clicking = false;
+    };
+
+    process.BeginOutputReadLine();
+    process.WaitForExit();
+})
+{ IsBackground = true }.Start();
+
+
+static void a(Button button, ProgramState state, ProgramStatePart part)
 {
     while (true)
     {
-        lefthandle.WaitOne();
+        part.Handle.WaitOne();
 
-        while (leftClicking)
+        while (part.Clicking)
         {
-            Click(Button.Left);
-            Thread.Sleep(leftDelay);
+            Click(button, state.Display);
+            Thread.Sleep(part.Delay);
         }
     }
-});
-leftThread.IsBackground = true;
-leftThread.Start();
+}
 
-var rightDelay = 10;
-bool rightClicking = false;
-var righthandle = new EventWaitHandle(false, EventResetMode.AutoReset);
-var rightThread = new Thread(() =>
-{
-    while (true)
-    {
-        righthandle.WaitOne();
+new Thread(() => a(Button.Left, state, state.Left)) { IsBackground = true }.Start();
+new Thread(() => a(Button.Right, state, state.Right)) { IsBackground = true }.Start();
+// new Thread(() =>
+// {
+//     while (true)
+//     {
+//         state.LeftHandle.WaitOne();
 
-        while (rightClicking)
-        {
-            Click(Button.Right);
-            Thread.Sleep(rightDelay);
-        }
-    }
-});
-rightThread.IsBackground = true;
-rightThread.Start();
+//         while (state.LeftClicking)
+//         {
+//             Click(Button.Left, state.Display);
+//             Thread.Sleep(state.LeftDelay);
+//         }
+//     }
+// })
+// { IsBackground = true }.Start();
 
-const ulong clickDelay = 10;
+// new Thread(() =>
+// {
+//     while (true)
+//     {
+//         state.RightHandle.WaitOne();
+
+//         while (state.RightClicking)
+//         {
+//             Click(Button.Right, state.Display);
+//             Thread.Sleep(state.RightDelay);
+//         }
+//     }
+// })
+// { IsBackground = true }.Start();
 
 
-var stream = File.OpenRead(mousefile);
-
+using var mouseStream = File.OpenRead(mousefile);
 Span<byte> buffer = stackalloc byte[16 + 8];
 while (true)
 {
-    var read = stream.Read(buffer);
+    var read = mouseStream.Read(buffer);
     var span = buffer.Slice(16, 8);
 
-    var button = span[2];
-    var pressed = span[4] == 1;
+    var button = (InKey) span[2];
+    if (button != InKey.Back && button != InKey.Front)
+        continue;
 
-    if (button == 19) // back
-    {
-        if (IsMinecraftFocused())
-        {
-            if (pressed)
-            {
-                leftClicking = !leftClicking;
-                if (leftClicking) lefthandle.Set();
-            }
-        }
-        else
-        {
-            if (pressed)
-                DoubleClick();
-        }
-    }
-    else if (button == 20) // front
-    {
-        if (IsMinecraftFocused())
-        {
-            rightClicking = pressed;
-            if (pressed) righthandle.Set();
-        }
-        else
-        {
-            leftClicking = !leftClicking;
-            if (leftClicking) lefthandle.Set();
-        }
-    }
+    var pressed = span[4] == 1;
+    testButton(button, pressed, modes, defaultConfig, state);
 }
 
+static void testButton(InKey button, bool pressed, ASD[] modes, AppliedConfiguration defaultConfig, ProgramState state)
+{
+    foreach (var mode in modes)
+    {
+        if (!mode.Regex.IsMatch(state.CurrentWindowTitle))
+            continue;
 
+        execute(button, pressed, mode.Config, state);
+        return;
+    }
+
+    execute(button, pressed, defaultConfig, state);
+}
+static void execute(InKey key, bool pressed, AppliedConfiguration config, ProgramState state)
+{
+    state.Left.Delay = config.LeftDelay;
+    state.Right.Delay = config.RightDelay;
+    var mode = config.Modes[key];
+
+    if (mode.Mode == Mode.DoubleClick)
+    {
+        if (pressed)
+            DoubleClick((Button) (int) mode.Key, state.Display);
+    }
+    else if (mode.Mode == Mode.ToggleClicking)
+    {
+        var part = mode.Key == Key.Left ? state.Left : state.Right;
+
+        if (pressed) part.Clicking = !part.Clicking;
+        if (part.Clicking) part.Handle.Set();
+    }
+    else if (mode.Mode == Mode.HoldClicking)
+    {
+        var part = mode.Key == Key.Left ? state.Left : state.Right;
+
+        part.Clicking = pressed;
+        if (part.Clicking) part.Handle.Set();
+    }
+}
 
 
 [MethodImpl(MethodImplOptions.NoInlining)]
-void DoubleClick()
+static void DoubleClick(Button button, nint display)
 {
-    XTestFakeButtonEvent(display, Button.Left, 1, 0);
-    XTestFakeButtonEvent(display, Button.Left, 0, 10);
-    XTestFakeButtonEvent(display, Button.Left, 1, 0 + clickDelay);
-    XTestFakeButtonEvent(display, Button.Left, 0, 10 + clickDelay);
+    const ulong clickDelay = 10;
 
-    Flush();
+    XTestFakeButtonEvent(display, button, 1, 0);
+    XTestFakeButtonEvent(display, button, 0, 10);
+    XTestFakeButtonEvent(display, button, 1, 0 + clickDelay);
+    XTestFakeButtonEvent(display, button, 0, 10 + clickDelay);
+
+    Flush(display);
 }
-
-bool IsMinecraftFocused()
-{
-    var name = GetFocusedName();
-    return name is not null && minecraftRegex.IsMatch(name);
-}
-string? GetFocusedName()
-{
-    var focus = XGetInputFocus(display, out var window, out var revert);
-    var name = XGetWMName(display, window, out var wname);
-
-    return wname.Value;
-}
-
 
 [MethodImpl(256)]
-void Click(Button button)
+static void Click(Button button, nint display)
 {
     XTestFakeButtonEvent(display, button, 1, 0);
     XTestFakeButtonEvent(display, button, 0, 10);
-    Flush();
+    Flush(display);
 }
 
-[MethodImpl(256)] void Flush() => XFlush(display);
-
+[MethodImpl(256)]
+static void Flush(nint display) => XFlush(display);
 
 
 [DllImport("libX11.so.6")] static extern IntPtr XOpenDisplay(string? display);
-[DllImport("libX11.so.6")] static extern int XGetInputFocus(IntPtr display, out IntPtr window, out int revert_to);
-[DllImport("libX11.so.6")] static extern int XGetWMName(IntPtr display, IntPtr window, out XTextProperty window_name_return);
 [DllImport("libXtst.so")] static extern int XTestFakeButtonEvent(IntPtr display, Button button, int is_press, ulong delay);
 [DllImport("libXtst.so")] static extern int XFlush(IntPtr display);
 
 enum Button : uint { Left = 1, Middle, Right, Fourth, Fifth }
 
+class ProgramState
+{
+    public readonly ProgramStatePart Left = new();
+    public readonly ProgramStatePart Right = new();
+    public readonly nint Display;
+
+    public string CurrentWindowTitle = "";
+
+    public ProgramState(nint display) => Display = display;
+}
+class ProgramStatePart
+{
+    public readonly EventWaitHandle Handle = new EventWaitHandle(false, EventResetMode.AutoReset);
+    public bool Clicking;
+    public int Delay;
+}
 
 readonly struct XTextProperty
 {
@@ -175,9 +243,63 @@ readonly struct XTextProperty
     }
 }
 
-sealed class Config
+class ASD
+{
+    public required Regex Regex { get; init; }
+    public required AppliedConfiguration Config { get; init; }
+}
+class AppliedConfiguration
+{
+    public required FrozenDictionary<InKey, Mode2> Modes { get; init; }
+
+    public required int LeftDelay { get; init; }
+    public required int RightDelay { get; init; }
+}
+class Mode2
+{
+    public required Key Key { get; init; }
+    public required Mode Mode { get; init; }
+}
+
+enum Mode { DoubleClick, ToggleClicking, HoldClicking }
+enum InKey { Back = 19, Front = 20 }
+enum Key { Left = (int) Button.Left, Right = (int) Button.Right }
+
+class Config
 {
     public required string MouseFile { get; init; }
     public required string MouseName { get; init; }
-    public required IReadOnlyCollection<string> Regexes { get; init; }
+    public required Configuration Default { get; init; }
+    public required IReadOnlyDictionary<string, Regex2> Regexes { get; init; }
+
+
+    public class Configuration
+    {
+        public required IReadOnlyDictionary<InKey, Mode2> Modes { get; init; }
+
+        public required int LeftDelay { get; init; }
+        public required int RightDelay { get; init; }
+    }
+    public class Regex2
+    {
+        public Dictionary<InKey, Mode2>? Modes { get; init; }
+        public int? LeftDelay { get; init; }
+        public int? RightDelay { get; init; }
+    }
+}
+
+#pragma warning disable CS0649
+struct I3MsgData
+{
+    public Container container { get; set; }
+
+    public struct Container
+    {
+        public WindowProperties window_properties { get; set; }
+
+        public struct WindowProperties
+        {
+            public string? title { get; set; }
+        }
+    }
 }
